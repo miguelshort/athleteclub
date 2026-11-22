@@ -19,6 +19,20 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
+      # El proyecto puede estar en la raíz del repositorio o dentro de una carpeta
+      # (por ejemplo AthleteClub/ al subir el ZIP). Se localiza por settings.gradle.kts.
+      - name: Localizar el proyecto Android
+        run: |
+          SETTINGS=$(find . -name settings.gradle.kts -not -path "*/build/*" -not -path "*/.git/*" | head -n 1)
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::No se encuentra settings.gradle.kts en el repositorio. Sube la carpeta completa del proyecto."
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$SETTINGS")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Proyecto encontrado en: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
+
       - name: Instalar JDK 17
         uses: actions/setup-java@v4
         with:
@@ -33,8 +47,12 @@ jobs:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
           log-accepted-android-sdk-licenses: false
 
+      # Instala Gradle 8.14.3 (la versión del proyecto). Se usa si el repositorio no incluye gradlew
+      # o gradle-wrapper.jar (GitHub web a veces no los sube).
       - name: Configurar Gradle (con caché)
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
 
       # Las claves son opcionales: sin secretos la app compila igual
       # (mapas OSM de desarrollo; cuenta y Club como «no configurado»).
@@ -53,12 +71,11 @@ jobs:
             echo "FIREBASE_API_KEY=$FIREBASE_API_KEY"
             echo "FIREBASE_APP_ID=$FIREBASE_APP_ID"
             echo "FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
-          } > local.properties
+          } > "$PROJECT_DIR/local.properties"
 
       # Firma estable: sin esto, cada ejecución crea una clave de depuración nueva y el APK
-      # NO se instala encima de la versión anterior (Android exige la misma firma para actualizar
-      # sin perder datos). Guarda tu debug.keystore en base64 en el secreto DEBUG_KEYSTORE_BASE64:
-      #   base64 -w0 ~/.android/debug.keystore   (Windows: certutil -encode ...)
+      # NO se instala encima de la versión anterior. Guarda tu debug.keystore en base64 en el
+      # secreto DEBUG_KEYSTORE_BASE64:  base64 -w0 ~/.android/debug.keystore
       - name: Restaurar clave de firma de depuración
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
@@ -71,20 +88,34 @@ jobs:
             echo "::warning::Sin DEBUG_KEYSTORE_BASE64: el APK usará una clave nueva y no se instalará encima de la versión actual."
           fi
 
-      - name: Dar permisos a gradlew
-        run: chmod +x gradlew
+      # Usa el wrapper si está completo; si no, el Gradle instalado arriba.
+      - name: Elegir Gradle
+        run: |
+          cd "$PROJECT_DIR"
+          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            chmod +x gradlew
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
+            echo "Usando gradlew del proyecto"
+          else
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+            echo "::notice::No hay gradlew o gradle-wrapper.jar en el repositorio: se usa Gradle 8.14.3 instalado."
+          fi
 
       - name: Tests (métricas, deportes y reglas)
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: |
+          cd "$PROJECT_DIR"
+          $GRADLE_CMD testDebugUnitTest --stacktrace
 
       - name: Compilar APK de depuración
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          cd "$PROJECT_DIR"
+          $GRADLE_CMD assembleDebug --stacktrace
 
       - name: Renombrar APK
         run: |
-          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' "$PROJECT_DIR/app/build.gradle.kts" || echo "dev")
           mkdir -p dist
-          cp app/build/outputs/apk/debug/*.apk "dist/AthleteClub-${VERSION}-debug.apk"
+          cp "$PROJECT_DIR"/app/build/outputs/apk/debug/*.apk "dist/AthleteClub-${VERSION}-debug.apk"
 
       - name: Subir APK
         uses: actions/upload-artifact@v4
@@ -98,5 +129,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: app/build/reports/tests/
+          path: ${{ env.PROJECT_DIR }}/app/build/reports/tests/
           if-no-files-found: ignore
