@@ -19,13 +19,24 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
-      # El proyecto puede estar en la raíz del repositorio o dentro de una carpeta
-      # (por ejemplo AthleteClub/ al subir el ZIP). Se localiza por settings.gradle.kts.
+      # El proyecto puede estar en la raíz, dentro de una carpeta (p. ej. AthleteClub/) o subido
+      # como ZIP sin descomprimir (p. ej. Athlete_Club_v2_proyecto.zip): en ese caso se descomprime aquí.
       - name: Localizar el proyecto Android
         run: |
-          SETTINGS=$(find . -name settings.gradle.kts -not -path "*/build/*" -not -path "*/.git/*" | head -n 1)
+          echo "Contenido del repositorio:"
+          find . -maxdepth 3 -not -path "./.git*" | sort | head -n 80
+          find_settings() { find . -name settings.gradle.kts -not -path "*/build/*" -not -path "*/.git/*" -not -path "*/__MACOSX/*" | head -n 1; }
+          SETTINGS=$(find_settings)
           if [ -z "$SETTINGS" ]; then
-            echo "::error::No se encuentra settings.gradle.kts en el repositorio. Sube la carpeta completa del proyecto."
+            ZIP=$(find . -iname "*.zip" -not -path "./.git/*" | head -n 1)
+            if [ -n "$ZIP" ]; then
+              echo "::notice::No hay proyecto descomprimido; se descomprime $ZIP"
+              mkdir -p _proyecto && unzip -q -o "$ZIP" -d _proyecto
+              SETTINGS=$(find_settings)
+            fi
+          fi
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::El repositorio no contiene el proyecto: falta settings.gradle.kts (y no hay ningún .zip con él). Sube el contenido de la carpeta AthleteClub (app/, gradle/, build.gradle.kts, settings.gradle.kts, gradle.properties…) o el ZIP del proyecto."
             exit 1
           fi
           PROJECT_DIR=$(dirname "$SETTINGS")
